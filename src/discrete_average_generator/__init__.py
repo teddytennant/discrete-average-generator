@@ -2,6 +2,7 @@
 
 from discrete_average_generator.ctmc import (
     average_generator,
+    equation8_target,
     integrate_transition,
     integrate_transition_expm,
     mixture_transition,
@@ -39,6 +40,7 @@ __all__ = [
     "FROZEN_EPS",
     "average_from_probability",
     "average_generator",
+    "equation8_target",
     "clip_and_renormalize",
     "enumerate_configs",
     "generator_matching_loss",

@@ -36,7 +36,7 @@ class AverageGeneratorMLP(eqx.Module):
         return jax.nn.softmax(logits)
 
 
-def train_average_generator(key, n_steps=30, vocab=4, lr=3e-3, batch=64):
+def train_average_generator(key, n_steps=30, vocab=4, lr=1e-4, batch=64):
     """Fit the matching loss for n_steps on one frozen batch.
 
     Returns the trained model, the per-step loss vector, and the posterior

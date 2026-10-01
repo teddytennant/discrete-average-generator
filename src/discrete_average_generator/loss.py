@@ -1,12 +1,17 @@
 """Regression loss for the average generator.
 
-u_tgt = Q_denoise + ((kappa(r) - kappa(t)) / kappa_dot(t)) * jvp_t(u_theta)
-L = mean square of (u_theta - stop_gradient(u_tgt)).
+Equation 8, stopped on the right-hand side:
+
+    u_tgt = Q - (t - r) (dU/dt + Q @ U)
+
+The transport term (r - t) Q U is required. L is the mean square of
+(u_theta - stop_gradient(u_tgt)).
 """
 
 import jax
 import jax.numpy as jnp
 
+from discrete_average_generator.ctmc import equation8_target
 from discrete_average_generator.rates import mixture_rate
 from discrete_average_generator.schedules import lam
 
@@ -17,35 +22,37 @@ def generator_matching_loss(model, x, t, r, posterior, kappa, kappa_dot):
     The network outputs a probability q_hat over the vocabulary. The average
     generator row is u = (q_hat - one_hot(x)) / (r - t), clock time.
 
-    jvp_t is the network time derivative mapped into generator coordinates,
-    with the schedule denominator held fixed. Differentiating the quotient
-    1/(kappa(r)-kappa(t)) would add a copy of u into the tangent. That copy
-    cancels u_theta against the (alpha/kappa_dot)*jvp term, and the stopped
-    target would no longer supervise q_hat.
+    u_tgt is the row of equation 8 at the current state. dU/dt is the full
+    time derivative of the network's U, and Q @ U is the transport term.
+    The whole right-hand side is stopped, as in the paper's U-prediction loss,
+    so the quotient piece of dU/dt does not cancel the live residual.
 
-    When r == t, kappa(r) - kappa(t) is zero and that reparameterization is
-    singular. Fall back to the mean square of (q_hat - true_posterior).
+    When r == t the reparameterization is singular. Fall back to the mean
+    square of (q_hat - true_posterior).
     """
     posterior = jnp.asarray(posterior)
     alpha = r - t
+    vocab = posterior.shape[-1]
 
     def main_loss():
-        def q_of(tt):
-            return model(x, tt, r)
+        states = jnp.arange(vocab)
 
-        q_hat, dq_hat = jax.jvp(q_of, (t,), (jnp.ones_like(t),))
-        u_theta = (q_hat - jax.nn.one_hot(x, q_hat.shape[-1], dtype=q_hat.dtype)) / alpha
-        # Clock-time denominator, held fixed in the tangent: du/dt = dq/dt / (r - t).
-        jvp_t = dq_hat / alpha
-        rate = lam(t, kappa, kappa_dot)
-        q_denoise = mixture_rate(posterior, rate)[x]
-        # Equation 8 rearranged, with the network's own time derivative stopped
-        # so the target does not depend on the parameters being matched.
-        u_tgt = q_denoise + (r - t) * jvp_t
-        return jnp.mean((u_theta - jax.lax.stop_gradient(u_tgt)) ** 2)
+        def u_matrix(tt):
+            def row(y):
+                q_hat = model(y, tt, r)
+                eye = jax.nn.one_hot(y, vocab, dtype=q_hat.dtype)
+                return (q_hat - eye) / (r - tt)
+
+            return jax.vmap(row)(states)
+
+        u_mat, du_mat = jax.jvp(u_matrix, (t,), (jnp.ones_like(t),))
+        q_mat = mixture_rate(posterior, lam(t, kappa, kappa_dot))
+        target = equation8_target(u_mat, du_mat, q_mat, r, t)
+        u_theta = u_mat[x]
+        u_tgt = jax.lax.stop_gradient(target[x])
+        return jnp.mean((u_theta - u_tgt) ** 2)
 
     def endpoint_loss():
-        # r == t reduction: supervise the network probability directly.
         q_hat = model(x, t, r)
         return jnp.mean((q_hat - posterior) ** 2)
 

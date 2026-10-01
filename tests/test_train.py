@@ -5,11 +5,19 @@ import jax.numpy as jnp
 
 from discrete_average_generator import (
     AverageGeneratorMLP,
+    equation8_target,
     generator_matching_loss,
     mixture_rate,
+    mixture_transition,
     train_average_generator,
 )
-from discrete_average_generator.schedules import kappa_dot_linear, kappa_linear
+from discrete_average_generator.schedules import (
+    kappa_dot_linear,
+    kappa_dot_quadratic,
+    kappa_linear,
+    kappa_quadratic,
+    lam,
+)
 
 
 def test_loss_matches_stopped_target_formula():
@@ -25,24 +33,25 @@ def test_loss_matches_stopped_target_formula():
         model, x, t, r, posterior, kappa_linear, kappa_dot_linear
     )
 
-    def q_of(tt):
-        return model(x, tt, r)
+    def u_matrix(tt):
+        def row(y):
+            q_hat = model(y, tt, r)
+            eye = jax.nn.one_hot(y, vocab, dtype=q_hat.dtype)
+            return (q_hat - eye) / (r - tt)
 
-    q_hat, dq_hat = jax.jvp(q_of, (t,), (jnp.ones_like(t),))
-    alpha = r - t
-    u_theta = (q_hat - jax.nn.one_hot(x, vocab)) / alpha
-    jvp_t = dq_hat / alpha
-    rate = 1.0 / (1.0 - t)
-    u_tgt = mixture_rate(posterior, rate)[x] + (alpha / 1.0) * jvp_t
-    expected = jnp.mean((u_theta - jax.lax.stop_gradient(u_tgt)) ** 2)
+        return jax.vmap(row)(jnp.arange(vocab))
+
+    u_mat, du_mat = jax.jvp(u_matrix, (t,), (jnp.ones_like(t),))
+    q_mat = mixture_rate(posterior, lam(t, kappa_linear, kappa_dot_linear))
+    target = equation8_target(u_mat, du_mat, q_mat, r, t)
+    expected = jnp.mean((u_mat[x] - jax.lax.stop_gradient(target[x])) ** 2)
     assert jnp.allclose(value, expected, atol=1e-6)
     assert jnp.isfinite(value)
 
-    # Quotient-rule tangent would cancel u and must not be what the loss uses.
-    quotient_jvp = dq_hat / alpha + u_theta / alpha
-    quotient_tgt = mixture_rate(posterior, rate)[x] + alpha * quotient_jvp
-    quotient_loss = jnp.mean((u_theta - quotient_tgt) ** 2)
-    assert float(jnp.abs(value - quotient_loss)) > 1e-4
+    # The formula without the transport term is not equation 8.
+    dropped = q_mat[x] + (r - t) * du_mat[x]
+    dropped_loss = jnp.mean((u_mat[x] - jax.lax.stop_gradient(dropped)) ** 2)
+    assert float(jnp.abs(value - dropped_loss)) > 1e-6
 
 
 def test_endpoint_fallback_is_posterior_mse():
@@ -56,6 +65,32 @@ def test_endpoint_fallback_is_posterior_mse():
     q_hat = model(x, t, t)
     expected = jnp.mean((q_hat - posterior) ** 2)
     assert jnp.allclose(value, expected, atol=1e-6)
+
+
+def test_exact_model_loss_is_equation8():
+    """A network that emits the true transition has a zero equation-8 residual.
+
+    This is the pair the published loss previously failed: t=0.11, r=0.83,
+    quadratic schedule. The identity holds, and the training target must too.
+    """
+    jax.config.update("jax_enable_x64", True)
+    posterior = jnp.array([0.2, 0.3, 0.5])
+    t = jnp.asarray(0.11)
+    r = jnp.asarray(0.83)
+
+    def model(x, tt, rr):
+        return mixture_transition(tt, rr, posterior, kappa_quadratic, kappa_dot_quadratic)[x]
+
+    value = generator_matching_loss(
+        model,
+        jnp.asarray(0),
+        t,
+        r,
+        posterior,
+        kappa_quadratic,
+        kappa_dot_quadratic,
+    )
+    assert float(value) < 1e-10
 
 
 def test_training_loss_decreases():

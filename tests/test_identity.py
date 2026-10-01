@@ -12,6 +12,7 @@ from discrete_average_generator import (
     average_from_probability,
     average_generator,
     enumerate_configs,
+    equation8_target,
     integrate_transition,
     integrate_transition_expm,
     mixture_rate,
@@ -115,6 +116,31 @@ def test_rate_ubar_and_reconstructed_transition(schedule_name):
     assert jnp.allclose(reconstructed, closed, atol=1e-12)
     assert jnp.allclose(jnp.sum(reconstructed, axis=-1), 1.0, atol=1e-12)
     assert jnp.all(reconstructed >= -1e-12)
+
+
+def test_review_pair_equation8_includes_transport():
+    """Review pair: quadratic scaled generator at t=0.11, r=0.83.
+
+    Equation 8 holds. The training target is equation8_target, which keeps the
+    transport term (r - t) Q U. The formula that drops it does not.
+    """
+    t = jnp.asarray(0.11, dtype=jnp.float64)
+    r = jnp.asarray(0.83, dtype=jnp.float64)
+
+    def rate_fn(s):
+        return scaled_generator(s, kappa_quadratic, kappa_dot_quadratic)
+
+    transition = integrate_transition(t, r, rate_fn, n_steps=256)
+    u_bar = average_generator(transition, r, t)
+    q_t = rate_fn(t)
+    du = self_consistency_rhs(u_bar, q_t, r, t)
+
+    eq8 = equation8_target(u_bar, du, q_t, r, t)
+    eq8_gap = float(jnp.max(jnp.abs(u_bar - eq8)))
+    dropped = q_t - (t - r) * du
+    dropped_gap = float(jnp.max(jnp.abs(eq8 - dropped)))
+    assert eq8_gap < 1e-12
+    assert dropped_gap > 0.2
 
 
 def test_reparameterization_round_trip():

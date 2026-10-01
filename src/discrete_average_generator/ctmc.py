@@ -82,12 +82,23 @@ def self_consistency_rhs(u_bar, q_t, r, t):
 
         dU/dt = U / (r - t) - Q_t / (r - t) - Q_t @ U.
 
-    Equivalently, equation 8: U = Q_t - (t - r) dU/dt + Q_t @ U.
+    Equivalently, equation 8: U = Q_t - (t - r) (dU/dt + Q_t @ U).
     The product is left-multiplication. Right-multiplication agrees only when
     the two matrices commute.
     """
     gap = r - t
     return u_bar / gap - q_t / gap - q_t @ u_bar
+
+
+def equation8_target(u_bar, du_dt, q_t, r, t):
+    """Right-hand side of equation 8.
+
+    U = Q_t - (t - r) (dU/dt + Q_t @ U)
+      = Q_t + (r - t) dU/dt + (r - t) (Q_t @ U).
+
+    The second summand is the transport term. Dropping it is not equation 8.
+    """
+    return q_t - (t - r) * (du_dt + q_t @ u_bar)
 
 
 def mixture_transition(t, r, posterior, kappa, kappa_dot):
